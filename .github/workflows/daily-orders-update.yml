@@ -1,0 +1,41 @@
+name: Daily Orders Update
+
+on:
+  schedule:
+    # 매일 오후 4:30 KST (UTC 07:30) - KST는 UTC+9
+    - cron: '30 7 * * *'
+  workflow_dispatch: # 수동 실행 가능
+
+jobs:
+  update-orders:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create .env file
+      run: |
+        echo "API_KEY=${{ secrets.IMWEB_API_KEY }}" >> .env
+        echo "SECRET_KEY=${{ secrets.IMWEB_SECRET_KEY }}" >> .env
+        echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+        echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+        echo "FIRST_ORDER_DATE=2025-01-20" >> .env
+        
+    - name: Run daily orders update
+      run: |
+        python3 get_orders.py --daily
+        
+    - name: Show completion status
+      run: |
+        echo "✅ 일일 주문 업데이트 완료 - $(date '+%Y-%m-%d %H:%M:%S KST')"
