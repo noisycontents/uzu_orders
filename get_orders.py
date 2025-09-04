@@ -460,8 +460,128 @@ def get_daily_orders_24h(access_token):
     print(f"📅 일일 업데이트: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
     print(f"   ⏰ 30분 여유 시간으로 누락 방지")
     
-    # 지정된 시간 범위를 collect_orders_by_day 함수로 처리
-    return collect_orders_by_day(access_token, start_time, end_time)
+    # 1. 지정된 시간 범위의 새 주문 수집
+    new_orders = collect_orders_by_day(access_token, start_time, end_time)
+    
+    # 2. 최근 1개월 취소 주문 상태 업데이트
+    print(f"\n🔄 최근 1개월 취소 주문 상태 업데이트 확인 중...")
+    cancel_orders = get_recent_canceled_orders(access_token)
+    
+    # 3. 두 데이터 병합
+    all_orders = new_orders + cancel_orders
+    
+    # 중복 제거 (주문번호 기준)
+    seen_order_nos = set()
+    deduped = []
+    for order in all_orders:
+        order_no = order.get('order_no')
+        if order_no and order_no not in seen_order_nos:
+            seen_order_nos.add(order_no)
+            deduped.append(order)
+    
+    if len(deduped) != len(all_orders):
+        print(f"🔁 중복 제거: {len(all_orders)} → {len(deduped)}")
+    
+    return deduped
+
+def get_recent_canceled_orders(access_token):
+    """최근 1개월 내 취소된 주문을 조회합니다."""
+    kst = pytz.timezone('Asia/Seoul')
+    now_kst = datetime.now(kst)
+    one_month_ago = now_kst - timedelta(days=30)
+    
+    print(f"   📋 취소 주문 확인 범위: {one_month_ago.strftime('%Y-%m-%d')} ~ {now_kst.strftime('%Y-%m-%d')}")
+    
+    # 최근 1개월 범위에서 취소 상태 주문만 조회
+    return collect_orders_by_day_with_status(access_token, one_month_ago, now_kst, 'CANCEL')
+
+def collect_orders_by_day_with_status(access_token, start_kst_dt, end_kst_dt, target_status):
+    """특정 기간의 특정 상태 주문을 수집합니다."""
+    from time import sleep
+    url = 'https://api.imweb.me/v2/shop/orders'
+    headers = {'Content-Type': 'application/json', 'access-token': access_token}
+
+    cursor = start_kst_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_kst_dt = end_kst_dt.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    all_orders = []
+    day_idx = 0
+    types = [None, 'normal', 'npay', 'talkpay']
+    cancel_count = 0
+    
+    while cursor <= end_kst_dt:
+        day_idx += 1
+        day_start = cursor - timedelta(seconds=60)
+        day_end = cursor + timedelta(days=1, seconds=-1+60)
+        
+        for t in types:
+            base_params = {
+                'order_date_from': int(day_start.timestamp()),
+                'order_date_to': int(day_end.timestamp()),
+                'status': 'cancel'  # 취소 상태만 조회
+            }
+            if t is not None:
+                base_params['type'] = t
+                
+            try:
+                first_list, pgn = _orders_first_page_and_count(access_token, base_params)
+                total = int(pgn.get('data_count', 0) or 0)
+                pagesize = int(pgn.get('pagesize', 100) or 100)
+                total_pages = int(pgn.get('total_page', (total + pagesize - 1)//pagesize) or 1)
+                
+                if total == 0:
+                    continue
+                    
+                day_orders = list(first_list)
+                
+                if total_pages > 1:
+                    for page in range(2, total_pages + 1):
+                        params = dict(base_params)
+                        params.update({'offset': page, 'limit': pagesize, 'order_version': 'v2'})
+                        
+                        retry_count = 0
+                        max_retries = 3
+                        page_success = False
+                        
+                        while retry_count < max_retries and not page_success:
+                            try:
+                                r = requests.get(url, headers=headers, params=params, timeout=15)
+                                r.raise_for_status()
+                                cur = r.json().get('data', {}).get('list', []) or []
+                                
+                                if not cur:
+                                    page_success = True
+                                    break
+                                    
+                                day_orders.extend(cur)
+                                page_success = True
+                                sleep(0.08)
+                                
+                            except Exception as e:
+                                retry_count += 1
+                                if retry_count >= max_retries:
+                                    break
+                                else:
+                                    sleep(1)
+                        
+                        if not page_success and retry_count >= max_retries:
+                            break
+                
+                cancel_count += len(day_orders)
+                all_orders.extend(day_orders)
+                
+            except Exception as e:
+                continue
+        
+        cursor += timedelta(days=1)
+        sleep(0.08)
+
+    if cancel_count > 0:
+        print(f"   ✅ 최근 1개월 취소 주문: {cancel_count}개 발견")
+    else:
+        print(f"   📋 최근 1개월 취소 주문: 없음")
+    
+    return all_orders
 
 def get_orders_by_day(access_token, day_start, day_end):
     """1일 단위로 주문을 조회합니다."""
