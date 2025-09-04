@@ -1252,9 +1252,7 @@ def main():
             print(f"\n📊 최근 주문 미리보기:")
             for i, (order_no, info) in enumerate(recent_orders.items(), 1):
                 print(f"  {i}. 주문번호: {order_no}")
-                print(f"     주문자: {info['orderer_name']}")
                 print(f"     주문시간: {info['order_time']}")
-                print(f"     상품: {', '.join(info['products'])}")
                 print()
                 
         elif response.status_code == 401:
