@@ -99,8 +99,8 @@ pip install -r requirements.txt
 ### Secrets 설정 필요
 GitHub 레포지토리 Settings > Secrets and variables > Actions에서 다음 secrets를 설정해야 합니다:
 
-- `IMWEB_API_KEY`: imweb API 키
-- `IMWEB_SECRET_KEY`: imweb Secret 키  
+- `API_KEY`: imweb API 키
+- `SECRET_KEY`: imweb Secret 키  
 - `SUPABASE_URL`: Supabase 프로젝트 URL
 - `SUPABASE_KEY`: Supabase anon 키
 

@@ -26,8 +26,8 @@ jobs:
         
     - name: Create .env file
       run: |
-        echo "API_KEY=${{ secrets.IMWEB_API_KEY }}" >> .env
-        echo "SECRET_KEY=${{ secrets.IMWEB_SECRET_KEY }}" >> .env
+        echo "API_KEY=${{ secrets.API_KEY }}" >> .env
+        echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> .env
         echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
         echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
         echo "FIRST_ORDER_DATE=2025-01-20" >> .env
