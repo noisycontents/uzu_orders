@@ -55,7 +55,7 @@ function fetchAllOrdersFromSupabase() {
   const config = getSupabaseConfig();
   const allOrders = [];
   let offset = 0;
-  const limit = 1000;
+  const limit = 2000;
   
   while (true) {
     const url = `${config.url}/rest/v1/uzu_orders?offset=${offset}&limit=${limit}&order=id.asc`;
@@ -289,31 +289,41 @@ function syncOrdersByDateRange(startDate, endDate) {
 
 /**
  * 일일 업데이트: 새 주문 + 취소 상태 변경 업데이트
- * (전날 15:30 ~ 당일 16:00 범위의 updated_at 기준)
+ * (전날 15:00 ~ 당일 15:30 범위의 updated_at 기준)
  */
 function syncDailyUpdates() {
   try {
     console.log('⏰ 일일 업데이트 동기화 시작');
     
-    // 전날 15:30 ~ 당일 16:00 범위 계산
-    const now = new Date();
-    const today4pm = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 16, 0, 0);
-    const yesterday330pm = new Date(today4pm.getTime() - (24 * 60 + 30) * 60 * 1000); // 24시간 30분 전
+    // 전날 15:00 ~ 당일 15:30 범위 계산 (KST 기준)
+    // Google Apps Script는 UTC로 동작하므로 KST로 변환 필요 (UTC+9)
+    const nowUTC = new Date();
+    const nowKST = new Date(nowUTC.getTime() + 9 * 60 * 60 * 1000); // UTC + 9시간 = KST
     
-    // 현재 시간이 4시 이전이면 어제 기준으로 계산
+    const today330pmKST = new Date(nowKST.getFullYear(), nowKST.getMonth(), nowKST.getDate(), 15, 30, 0); // 당일 15:30 KST
+    const yesterday3pmKST = new Date(nowKST.getFullYear(), nowKST.getMonth(), nowKST.getDate() - 1, 15, 0, 0); // 전날 15:00 KST
+    
+    // KST 시간을 다시 UTC로 변환 (Supabase는 UTC로 저장)
+    const today330pm = new Date(today330pmKST.getTime() - 9 * 60 * 60 * 1000);
+    const yesterday3pm = new Date(yesterday3pmKST.getTime() - 9 * 60 * 60 * 1000);
+    const now = nowKST;
+    
+    // 현재 시간이 15:30 이전이면 어제 기준으로 계산
     let startTime, endTime;
-    if (now < today4pm) {
-      endTime = new Date(yesterday330pm.getTime() + 24 * 60 * 60 * 1000); // 어제 4:00
-      startTime = yesterday330pm; // 그저께 3:30
+    if (now < today330pm) {
+      // 현재 시간이 15:30 이전 → 어제 기준
+      endTime = new Date(yesterday3pm.getTime() + 24 * 60 * 60 * 1000 + 30 * 60 * 1000); // 어제 15:30
+      startTime = yesterday3pm; // 그저께 15:00
     } else {
-      endTime = today4pm;
-      startTime = yesterday330pm;
+      // 현재 시간이 15:30 이후 → 오늘 기준
+      endTime = today330pm; // 당일 15:30
+      startTime = yesterday3pm; // 전날 15:00
     }
     
     const startISO = startTime.toISOString();
     const endISO = endTime.toISOString();
     
-    console.log(`📅 업데이트 범위: ${startTime.toLocaleString('ko-KR')} ~ ${endTime.toLocaleString('ko-KR')}`);
+    console.log(`📅 업데이트 범위: ${startTime.toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'})} ~ ${endTime.toLocaleString('ko-KR', {timeZone: 'Asia/Seoul'})} (KST)`);
     
     // updated_at 기준으로 최근 변경된 데이터 조회
     const config = getSupabaseConfig();
@@ -342,11 +352,28 @@ function syncDailyUpdates() {
       return;
     }
     
-    // 상태별 통계
+    // 상태별 통계 및 상세 로그
     const statusCount = {};
+    const statusDetails = {};
+    
     updatedOrders.forEach(order => {
       const status = order.order_status || 'UNKNOWN';
+      const orderNo = order.order_no || '';
+      const ordererName = order.orderer_name || '';
+      const prodName = order.prod_name || '';
+      
       statusCount[status] = (statusCount[status] || 0) + 1;
+      
+      if (!statusDetails[status]) {
+        statusDetails[status] = [];
+      }
+      
+      statusDetails[status].push({
+        orderNo: orderNo,
+        ordererName: ordererName,
+        prodName: prodName,
+        updatedAt: order.updated_at
+      });
     });
     
     console.log('📈 업데이트된 주문 상태별 통계:');
@@ -354,10 +381,54 @@ function syncDailyUpdates() {
       console.log(`   ${status}: ${count}개`);
     });
     
+    console.log('\n📋 업데이트된 주문 상세 내역:');
+    Object.entries(statusDetails).forEach(([status, orders]) => {
+      console.log(`\n🔸 ${status} 상태 (${orders.length}개):`);
+      orders.slice(0, 10).forEach((order, index) => { // 최대 10개만 표시
+        console.log(`   ${index + 1}. 주문번호: ${order.orderNo} | 주문자: ${order.ordererName} | 상품: ${order.prodName}`);
+      });
+      if (orders.length > 10) {
+        console.log(`   ... 외 ${orders.length - 10}개 더`);
+      }
+    });
+    
     // 기존 시트 데이터와 병합하여 업데이트
     updateSheetWithChangedOrders(updatedOrders);
     
     console.log('✅ 일일 업데이트 완료!');
+    
+    // 자동으로 상품별 시트 동기화 실행 (업데이트된 데이터만 전달)
+    console.log('\n🔗 상품별 시트 동기화 시작...');
+    try {
+      // Sync.gs의 함수 호출 (업데이트된 데이터를 직접 전달)
+      if (typeof syncAllProductsWithData === 'function') {
+        syncAllProductsWithData(updatedOrders);
+        console.log('✅ 상품별 시트 동기화 완료!');
+      } else if (typeof syncAllProducts === 'function') {
+        // 기존 함수 사용 (전체 데이터 다시 조회)
+        console.log('📋 전체 데이터 기반 상품별 동기화 실행...');
+        syncAllProducts();
+        console.log('✅ 상품별 시트 동기화 완료!');
+      } else {
+        console.warn('⚠️ Sync.gs 함수를 찾을 수 없습니다. Sync.gs 파일이 같은 프로젝트에 있는지 확인하세요.');
+      }
+    } catch (error) {
+      console.error('❌ 상품별 시트 동기화 실패:', error);
+    }
+    
+    // 자동으로 학습 완료된 주문 삭제 실행
+    console.log('\n🗑️ 학습 완료된 주문 삭제 시작...');
+    try {
+      // Delete.gs의 함수 호출
+      if (typeof deleteCompletedStudyOrders === 'function') {
+        deleteCompletedStudyOrders();
+        console.log('✅ 학습 완료 주문 삭제 완료!');
+      } else {
+        console.warn('⚠️ deleteCompletedStudyOrders 함수를 찾을 수 없습니다. Delete.gs 파일이 같은 프로젝트에 있는지 확인하세요.');
+      }
+    } catch (error) {
+      console.error('❌ 학습 완료 주문 삭제 실패:', error);
+    }
     
   } catch (error) {
     console.error('❌ 일일 업데이트 실패:', error);
@@ -411,22 +482,64 @@ function updateSheetWithChangedOrders(updatedOrders) {
     let updatedCount = 0;
     let newCount = 0;
     
-    sheetData.forEach(newRowData => {
+    const updatedDetails = [];
+    const newDetails = [];
+    
+    sheetData.forEach((newRowData, index) => {
       const id = newRowData[idIndex];
+      const orderNo = newRowData[headers.indexOf('order_no')] || '';
+      const ordererName = newRowData[headers.indexOf('orderer_name')] || '';
+      const orderStatus = newRowData[headers.indexOf('order_status')] || '';
       
       if (existingOrderMap[id]) {
         // 기존 데이터 업데이트
         const rowIndex = existingOrderMap[id].rowIndex;
         sheet.getRange(rowIndex, 1, 1, headers.length).setValues([newRowData]);
         updatedCount++;
+        
+        updatedDetails.push({
+          orderNo: orderNo,
+          ordererName: ordererName,
+          status: orderStatus,
+          rowIndex: rowIndex
+        });
       } else {
         // 새 데이터 추가 (시트 끝에)
         sheet.getRange(lastRow + 1 + newCount, 1, 1, headers.length).setValues([newRowData]);
         newCount++;
+        
+        newDetails.push({
+          orderNo: orderNo,
+          ordererName: ordererName,
+          status: orderStatus,
+          rowIndex: lastRow + 1 + newCount
+        });
       }
     });
     
     console.log(`🔄 시트 업데이트 완료: 수정 ${updatedCount}개, 신규 ${newCount}개`);
+    
+    // 업데이트된 항목 상세 로그
+    if (updatedDetails.length > 0) {
+      console.log('\n📝 시트에서 업데이트된 주문:');
+      updatedDetails.slice(0, 10).forEach((detail, index) => {
+        console.log(`   ${index + 1}. 행${detail.rowIndex}: ${detail.orderNo} | ${detail.ordererName} | ${detail.status}`);
+      });
+      if (updatedDetails.length > 10) {
+        console.log(`   ... 외 ${updatedDetails.length - 10}개 더`);
+      }
+    }
+    
+    // 새로 추가된 항목 상세 로그
+    if (newDetails.length > 0) {
+      console.log('\n➕ 시트에 새로 추가된 주문:');
+      newDetails.slice(0, 10).forEach((detail, index) => {
+        console.log(`   ${index + 1}. 행${detail.rowIndex}: ${detail.orderNo} | ${detail.ordererName} | ${detail.status}`);
+      });
+      if (newDetails.length > 10) {
+        console.log(`   ... 외 ${newDetails.length - 10}개 더`);
+      }
+    }
     
   } catch (error) {
     console.error('시트 부분 업데이트 실패:', error);
@@ -438,7 +551,30 @@ function updateSheetWithChangedOrders(updatedOrders) {
  * 수동 실행용 함수들
  */
 function runFullSync() {
-  syncSupabaseToSheets();
+  try {
+    // 1. 전체 Supabase 데이터 동기화
+    syncSupabaseToSheets();
+    
+    // 2. 자동으로 상품별 시트 전체 동기화 실행
+    console.log('\n🔗 상품별 시트 전체 동기화 시작...');
+    try {
+      // Sync.gs의 전체 동기화 함수 호출
+      if (typeof syncAllProducts === 'function') {
+        syncAllProducts();
+        console.log('✅ 상품별 시트 전체 동기화 완료!');
+      } else {
+        console.warn('⚠️ syncAllProducts 함수를 찾을 수 없습니다. Sync.gs 파일이 같은 프로젝트에 있는지 확인하세요.');
+      }
+    } catch (error) {
+      console.error('❌ 상품별 시트 전체 동기화 실패:', error);
+    }
+    
+    console.log('🎉 전체 동기화 (메인 + 상품별) 완료!');
+    
+  } catch (error) {
+    console.error('❌ 전체 동기화 실패:', error);
+    throw error;
+  }
 }
 
 function runDailySync() {
