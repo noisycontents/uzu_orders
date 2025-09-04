@@ -55,7 +55,9 @@ function fetchAllOrdersFromSupabase() {
   const config = getSupabaseConfig();
   const allOrders = [];
   let offset = 0;
-  const limit = 2000;
+  const limit = 1000; // Supabase 최대 limit는 1000개
+  
+  console.log('📊 Supabase에서 전체 데이터 조회 시작...');
   
   while (true) {
     const url = `${config.url}/rest/v1/uzu_orders?offset=${offset}&limit=${limit}&order=id.asc`;
@@ -79,17 +81,26 @@ function fetchAllOrdersFromSupabase() {
       const batch = JSON.parse(response.getContentText());
       
       if (batch.length === 0) {
+        console.log(`   오프셋 ${offset}: 0개 행 (조회 완료)`);
         break; // 더 이상 데이터가 없음
       }
       
       allOrders.push(...batch);
       console.log(`   오프셋 ${offset}: ${batch.length}개 행, 누적: ${allOrders.length}개`);
       
+      // 가져온 데이터가 limit보다 적으면 마지막 배치
       if (batch.length < limit) {
-        break; // 마지막 배치
+        console.log(`   📋 마지막 배치 완료 (${batch.length} < ${limit})`);
+        break;
       }
       
       offset += limit;
+      
+      // 무한 루프 방지 (최대 10번 요청)
+      if (offset >= 10000) {
+        console.warn(`⚠️ 최대 조회 한도 도달 (${offset}), 조회 중단`);
+        break;
+      }
       
     } catch (error) {
       console.error(`Supabase 조회 오류 (오프셋 ${offset}):`, error);
@@ -97,6 +108,7 @@ function fetchAllOrdersFromSupabase() {
     }
   }
   
+  console.log(`✅ Supabase 전체 조회 완료: ${allOrders.length}개`);
   return allOrders;
 }
 
@@ -569,7 +581,21 @@ function runFullSync() {
       console.error('❌ 상품별 시트 전체 동기화 실패:', error);
     }
     
-    console.log('🎉 전체 동기화 (메인 + 상품별) 완료!');
+    // 3. 자동으로 학습 완료된 주문 삭제 실행
+    console.log('\n🗑️ 학습 완료된 주문 삭제 시작...');
+    try {
+      // Delete.gs의 함수 호출
+      if (typeof deleteCompletedStudyOrders === 'function') {
+        deleteCompletedStudyOrders();
+        console.log('✅ 학습 완료 주문 삭제 완료!');
+      } else {
+        console.warn('⚠️ deleteCompletedStudyOrders 함수를 찾을 수 없습니다. Delete.gs 파일이 같은 프로젝트에 있는지 확인하세요.');
+      }
+    } catch (error) {
+      console.error('❌ 학습 완료 주문 삭제 실패:', error);
+    }
+    
+    console.log('🎉 전체 동기화 (메인 + 상품별 + 삭제) 완료!');
     
   } catch (error) {
     console.error('❌ 전체 동기화 실패:', error);
