@@ -14,15 +14,11 @@ imweb 주문 데이터 수집 및 Supabase 동기화 스크립트
 🚀 사용법:
   python3 get_orders.py                    # 최근 25개 주문 처리
   python3 get_orders.py --all              # 전체 주문 처리 (권장)
-  python3 get_orders.py --daily            # 최근 24시간 주문 업데이트 (GitHub Actions용)
+  python3 get_orders.py --daily            # 일일 업데이트 (전날 15:30 ~ 당일 16:00, GitHub Actions용)
   python3 get_orders.py --date 2025-08-30  # 특정 날짜 주문 처리
   python3 get_orders.py --recover-missing orders.csv  # CSV 비교하여 누락 주문 복구
 
-📋 필수 설정 (.env 파일):
-  API_KEY=your_imweb_api_key
-  SECRET_KEY=your_imweb_secret_key
-  SUPABASE_URL=your_supabase_project_url
-  SUPABASE_KEY=your_supabase_anon_key
+📋 필수 설정:
   FIRST_ORDER_DATE=2025-01-20  # 첫 주문일 (옵션)
 
 🎯 주요 기능:
@@ -37,23 +33,11 @@ imweb 주문 데이터 수집 및 Supabase 동기화 스크립트
 9. ✅ Supabase upsert: order_code + prod_no 기준 중복 방지 자동 업데이트
 10. ✅ 누락 주문 복구: CSV 파일과 비교하여 누락된 주문 개별 수집
 
-📊 수집 데이터:
-- 주문 기본 정보: 주문번호, 주문시간, 주문상태 등
-- 주문자 정보: 이름, 이메일, 전화번호
-- 배송지 정보: 수령인, 주소, 전화번호 등
-- 상품 정보: 상품명, 수량, 가격, 할인금액 등
-- 결제 정보: 결제방식, 총금액, 쿠폰, 포인트 등
-
 🔧 기술적 특징:
 - 일별 수집: 안정적인 데이터 수집을 위해 하루씩 처리
 - 재시도 로직: 네트워크 오류 및 API 제한 자동 처리
 - 중복 방지: Supabase에서 order_code + prod_no 기준 UNIQUE 제약
 - 오류 복구: 실패한 배치 자동 재시도 및 개별 복구 지원
-
-📈 성과:
-- 목표: 967개 주문 (CSV 기준)
-- 달성: 971개 주문 (100.4% 달성)
-- 데이터 품질: 완전한 상품 정보 및 서울 시간대 적용
 
 💡 일일 업데이트:
   # 매일 실행하여 새 주문 자동 동기화
@@ -139,7 +123,7 @@ def print_usage():
     print("📖 사용법:")
     print("  python3 get_orders.py              # 최근 25개 주문 처리")
     print("  python3 get_orders.py --all        # 전체 주문 처리")
-    print("  python3 get_orders.py --daily      # 최근 24시간 주문 업데이트 (GitHub Actions용)")
+    print("  python3 get_orders.py --daily      # 일일 업데이트 (전날 15:30~당일 16:00)")
     print("  python3 get_orders.py --date 2025-08-30  # 특정 날짜 주문 처리")
     print("  python3 get_orders.py --recover-missing orders.csv  # CSV와 비교하여 누락 주문 복구")
     print()
@@ -298,23 +282,23 @@ def ymd_to_ts_range_kst(ymd):
     return int(start.timestamp()), int(end.timestamp())
 
 def get_last_24h_range_kst():
-    """KST 기준 최근 24시간 범위를 반환합니다 (전날 오후 4:30 ~ 당일 오후 4:30)."""
+    """KST 기준 일일 업데이트 범위를 반환합니다 (전날 오후 3:30 ~ 당일 오후 4:00)."""
     kst = pytz.timezone('Asia/Seoul')
     now_kst = datetime.now(kst)
     
-    # 당일 오후 4:30
-    today_430pm = now_kst.replace(hour=16, minute=30, second=0, microsecond=0)
+    # 당일 오후 4:00
+    today_4pm = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
     
-    # 전날 오후 4:30
-    yesterday_430pm = today_430pm - timedelta(days=1)
+    # 전날 오후 3:30 (30분 여유 + 누락 방지)
+    yesterday_330pm = today_4pm - timedelta(days=1, minutes=30)
     
-    # 현재 시간이 오후 4:30 이전이면 어제 기준으로 계산
-    if now_kst < today_430pm:
-        end_time = yesterday_430pm
-        start_time = end_time - timedelta(days=1)
+    # 현재 시간이 오후 4:00 이전이면 어제 기준으로 계산
+    if now_kst < today_4pm:
+        end_time = yesterday_330pm + timedelta(days=1, minutes=30)  # 어제 4:00
+        start_time = yesterday_330pm - timedelta(days=1)  # 그저께 3:30
     else:
-        end_time = today_430pm
-        start_time = yesterday_430pm
+        end_time = today_4pm
+        start_time = yesterday_330pm
     
     return start_time, end_time
 
@@ -470,12 +454,13 @@ def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
     return all_orders
 
 def get_daily_orders_24h(access_token):
-    """최근 24시간 (전날 오후 4:30 ~ 당일 오후 4:30) 주문을 수집합니다."""
+    """일일 업데이트 (전날 오후 3:30 ~ 당일 오후 4:00) 주문을 수집합니다."""
     start_time, end_time = get_last_24h_range_kst()
     
     print(f"📅 일일 업데이트: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
+    print(f"   ⏰ 30분 여유 시간으로 누락 방지")
     
-    # 24시간 범위를 collect_orders_by_day 함수 재사용
+    # 지정된 시간 범위를 collect_orders_by_day 함수로 처리
     return collect_orders_by_day(access_token, start_time, end_time)
 
 def get_orders_by_day(access_token, day_start, day_end):
