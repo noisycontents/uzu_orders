@@ -2,8 +2,8 @@ name: Daily Orders Update
 
 on:
   schedule:
-    # 매일 오후 4:00 KST (UTC 07:00) - KST는 UTC+9
-    - cron: '0 7 * * *'
+    # 매일 오후 3:30 KST (UTC 06:30) - KST는 UTC+9
+    - cron: '30 6 * * *'
   workflow_dispatch: # 수동 실행 가능
 
 jobs:
@@ -38,4 +38,4 @@ jobs:
         
     - name: Show completion status
       run: |
-        echo "✅ 일일 주문 업데이트 완료 (전날 15:30~당일 16:00) - $(date '+%Y-%m-%d %H:%M:%S KST')"
+        echo "✅ 일일 주문 업데이트 완료 (전날 15:00~당일 15:30) - $(date '+%Y-%m-%d %H:%M:%S KST')"

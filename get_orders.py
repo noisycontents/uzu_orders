@@ -40,8 +40,8 @@ imweb 주문 데이터 수집 및 Supabase 동기화 스크립트
 - 오류 복구: 실패한 배치 자동 재시도 및 개별 복구 지원
 
 💡 일일 업데이트:
-  # 매일 실행하여 새 주문 자동 동기화
-  python3 get_orders.py --all
+  # 매일 실행하여 새 주문 자동 동기화 (전날 15:00~당일 15:30)
+  python3 get_orders.py --daily
 """
 
 import os
@@ -123,7 +123,7 @@ def print_usage():
     print("📖 사용법:")
     print("  python3 get_orders.py              # 최근 25개 주문 처리")
     print("  python3 get_orders.py --all        # 전체 주문 처리")
-    print("  python3 get_orders.py --daily      # 일일 업데이트 (전날 15:30~당일 16:00)")
+    print("  python3 get_orders.py --daily      # 일일 업데이트 (전날 15:00~당일 15:30)")
     print("  python3 get_orders.py --date 2025-08-30  # 특정 날짜 주문 처리")
     print("  python3 get_orders.py --recover-missing orders.csv  # CSV와 비교하여 누락 주문 복구")
     print()
@@ -282,23 +282,23 @@ def ymd_to_ts_range_kst(ymd):
     return int(start.timestamp()), int(end.timestamp())
 
 def get_last_24h_range_kst():
-    """KST 기준 일일 업데이트 범위를 반환합니다 (전날 오후 3:30 ~ 당일 오후 4:00)."""
+    """KST 기준 일일 업데이트 범위를 반환합니다 (전날 오후 3:00 ~ 당일 오후 3:30)."""
     kst = pytz.timezone('Asia/Seoul')
     now_kst = datetime.now(kst)
     
-    # 당일 오후 4:00
-    today_4pm = now_kst.replace(hour=16, minute=0, second=0, microsecond=0)
+    # 당일 오후 3:30
+    today_330pm = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
     
-    # 전날 오후 3:30 (30분 여유 + 누락 방지)
-    yesterday_330pm = today_4pm - timedelta(days=1, minutes=30)
+    # 전날 오후 3:00 (30분 여유 + 누락 방지)
+    yesterday_3pm = today_330pm - timedelta(days=1, minutes=30)
     
-    # 현재 시간이 오후 4:00 이전이면 어제 기준으로 계산
-    if now_kst < today_4pm:
-        end_time = yesterday_330pm + timedelta(days=1, minutes=30)  # 어제 4:00
-        start_time = yesterday_330pm - timedelta(days=1)  # 그저께 3:30
+    # 현재 시간이 오후 3:30 이전이면 어제 기준으로 계산
+    if now_kst < today_330pm:
+        end_time = yesterday_3pm + timedelta(days=1, minutes=30)  # 어제 3:30
+        start_time = yesterday_3pm - timedelta(days=1)  # 그저께 3:00
     else:
-        end_time = today_4pm
-        start_time = yesterday_330pm
+        end_time = today_330pm
+        start_time = yesterday_3pm
     
     return start_time, end_time
 
@@ -454,7 +454,7 @@ def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
     return all_orders
 
 def get_daily_orders_24h(access_token):
-    """일일 업데이트 (전날 오후 3:30 ~ 당일 오후 4:00) 주문을 수집합니다."""
+    """일일 업데이트 (전날 오후 3:00 ~ 당일 오후 3:30) 주문을 수집합니다."""
     start_time, end_time = get_last_24h_range_kst()
     
     print(f"📅 일일 업데이트: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
