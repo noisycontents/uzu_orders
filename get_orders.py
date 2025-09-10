@@ -982,6 +982,100 @@ def recover_missing_orders_from_csv(access_token, supabase_config, csv_file_path
         print(f"❌ 누락 주문 복구 중 오류: {e}")
         return False
 
+def retry_missing_product_orders(access_token, supabase_config):
+    """Supabase에서 상품 정보가 누락된 주문을 찾아 재조회합니다."""
+    import time
+    
+    print("\n🔍 상품 정보 누락된 주문 재조회 시작...")
+    
+    try:
+        # Supabase에서 prod_name이 '상품 정보 없음'인 주문들 조회
+        url = f"{supabase_config['url']}/rest/v1/uzu_orders?prod_name=eq.상품 정보 없음&select=order_no"
+        response = requests.get(url, headers=supabase_config['headers'], timeout=30)
+        
+        if response.status_code != 200:
+            print(f"❌ 누락 주문 조회 실패: HTTP {response.status_code}")
+            return False
+            
+        missing_orders = response.json()
+        missing_order_nos = list(set([row['order_no'] for row in missing_orders if row.get('order_no')]))
+        
+        if not missing_order_nos:
+            print("✅ 상품 정보가 누락된 주문이 없습니다!")
+            return True
+        
+        print(f"🚨 상품 정보 누락 주문: {len(missing_order_nos)}개")
+        print(f"   재조회할 주문들: {sorted(missing_order_nos)[:5]}{'...' if len(missing_order_nos) > 5 else ''}")
+        
+        # 누락된 주문들 재조회
+        recovered_data = []
+        failed_orders = []
+        
+        for i, order_no in enumerate(missing_order_nos, 1):
+            print(f"  {i}/{len(missing_order_nos)} 주문번호: {order_no} 재조회 중...")
+            
+            try:
+                # 개별 주문 상세 정보 조회
+                order_detail = get_single_order(access_token, order_no)
+                if not order_detail:
+                    failed_orders.append(order_no)
+                    print(f"    ❌ 주문 조회 실패")
+                    continue
+                
+                # 상품 정보 재조회 (더 강력한 재시도 로직)
+                products_list = get_order_products_list(access_token, order_no, retry_count=5)
+                
+                # 여전히 빈 결과면 추가 대기 후 한 번 더 시도
+                if not products_list:
+                    print(f"    ⏳ 추가 대기 후 재시도...")
+                    time.sleep(2)
+                    products_list = get_order_products_list(access_token, order_no, retry_count=3)
+                
+                if products_list:
+                    print(f"    ✅ {len(products_list)}개 상품 정보 복구 성공!")
+                    
+                    # 각 상품별로 Supabase 데이터 준비
+                    for product_info in products_list:
+                        supabase_row = prepare_supabase_data(order_detail, product_info)
+                        recovered_data.append(supabase_row)
+                else:
+                    failed_orders.append(order_no)
+                    print(f"    ❌ 상품 정보 재조회 실패")
+                
+                # API 호출 간격
+                time.sleep(0.2)
+                
+            except Exception as e:
+                failed_orders.append(order_no)
+                print(f"    ❌ 재조회 중 오류: {e}")
+                continue
+        
+        print(f"\n📈 상품 정보 재조회 결과:")
+        print(f"   성공: {len(recovered_data)}개 행 복구")
+        print(f"   실패: {len(failed_orders)}개 주문")
+        
+        if failed_orders:
+            print(f"   실패한 주문들: {sorted(failed_orders)[:5]}{'...' if len(failed_orders) > 5 else ''}")
+        
+        # 복구된 데이터가 있으면 Supabase에 업데이트
+        if recovered_data:
+            print(f"\n💾 {len(recovered_data)}개 복구된 행을 Supabase에 업데이트 중...")
+            success = upsert_to_supabase(supabase_config, recovered_data)
+            
+            if success:
+                print("✅ 상품 정보 누락 주문 복구 완료!")
+                return True
+            else:
+                print("❌ 복구된 데이터 저장 실패")
+                return False
+        else:
+            print("⚠️ 복구할 수 있는 상품 정보가 없습니다.")
+            return len(failed_orders) == 0  # 실패한 주문이 없으면 성공으로 간주
+            
+    except Exception as e:
+        print(f"❌ 상품 정보 재조회 중 오류: {e}")
+        return False
+
 def get_single_order(access_token, order_no, retry_count=3):
     """개별 주문 상세 정보를 조회합니다."""
     import time
@@ -1223,6 +1317,16 @@ def main():
             if success:
                 print("✅ 모든 데이터가 Supabase uzu_orders 테이블에 저장되었습니다!")
                 print("🔗 Supabase 대시보드에서 데이터를 확인하실 수 있습니다.")
+                
+                # 상품 정보 누락된 주문 재조회 및 복구
+                print("\n🔧 상품 정보 누락 주문 재조회 및 복구 시작...")
+                retry_success = retry_missing_product_orders(final_access_token, supabase_config)
+                
+                if retry_success:
+                    print("✅ 상품 정보 재조회 완료!")
+                else:
+                    print("⚠️ 일부 상품 정보 재조회에 실패했습니다.")
+                    
             else:
                 print("❌ Supabase 저장에 실패했습니다.")
         elif use_supabase:
