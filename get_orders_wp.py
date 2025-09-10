@@ -464,6 +464,10 @@ def convert_woocommerce_to_supabase_format(wc_order):
     order_time_str = wc_order.get('date_created', '')
     order_time = convert_wp_date_to_kst_iso(order_time_str)
     
+    # 결제 시간 변환 (date_paid 또는 date_created 사용)
+    payment_time_str = wc_order.get('date_paid', '') or order_time_str
+    payment_time = convert_wp_date_to_kst_iso(payment_time_str)
+    
     # 고객 정보 (billing)
     billing = wc_order.get('billing', {})
     orderer_name = f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip()
@@ -495,6 +499,7 @@ def convert_woocommerce_to_supabase_format(wc_order):
         converted_orders.append({
             'order_no': order_no,
             'order_time': order_time,
+            'payment_time': payment_time,  # 결제 시간 추가
             'order_status': order_status,
             'orderer_name': orderer_name,
             'orderer_email': orderer_email, 
@@ -528,6 +533,7 @@ def convert_woocommerce_to_supabase_format(wc_order):
             converted_orders.append({
                 'order_no': order_no,
                 'order_time': order_time,
+                'payment_time': payment_time,  # 결제 시간 추가
                 'order_status': order_status,
                 'orderer_name': orderer_name,
                 'orderer_email': orderer_email,
@@ -550,17 +556,17 @@ def upsert_to_supabase(supabase_config, orders_data):
         print("📋 저장할 데이터가 없습니다.")
         return
     
-    # 중복 제거 (order_code, prod_no 기준)
+    # 중복 제거 (order_no, prod_no 기준)
     unique_orders = {}
     for order in orders_data:
-        key = (order['order_code'], order['prod_no'])
+        key = (order['order_no'], order['prod_no'])
         unique_orders[key] = order
     
     orders_data = list(unique_orders.values())
     print(f"🔍 중복 제거 후: {len(orders_data)}개 행")
     
-    # Supabase upsert
-    url = f"{supabase_config['url']}/rest/v1/uzu_orders"
+    # Supabase upsert (order_no, prod_no 기준)
+    url = f"{supabase_config['url']}/rest/v1/uzu_orders?on_conflict=order_no,prod_no"
     
     try:
         response = requests.post(

@@ -398,8 +398,8 @@ def get_single_date_orders(access_token, date_str):
                             period_end = date_dt.replace(hour=hour_end-1, minute=59, second=59)
                         
                         hour_params = {
-                            'order_date_from': int(period_start.timestamp()),
-                            'order_date_to': int(period_end.timestamp()),
+            'order_date_from': int(period_start.timestamp()),
+            'order_date_to': int(period_end.timestamp()),
                             'type': media_type
                         }
                         
@@ -559,8 +559,8 @@ def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
         
         # 매체 구분 없이 ALL 데이터 수집 (더 단순하고 확실함)
         base_params = {
-            'order_date_from': int(day_start.timestamp()),
-            'order_date_to': int(day_end.timestamp()),
+        'order_date_from': int(day_start.timestamp()),
+        'order_date_to': int(day_end.timestamp()),
         }
         # type 파라미터 없음 = ALL 매체
         
@@ -764,15 +764,46 @@ def get_daily_orders_24h(access_token):
     return deduped
 
 def get_recent_canceled_orders(access_token):
-    """최근 1개월 내 취소된 주문을 조회합니다."""
+    """최근 1개월 내 취소된 주문을 조회합니다 (효율적인 단일 API 호출)."""
     kst = pytz.timezone('Asia/Seoul')
     now_kst = datetime.now(kst)
     one_month_ago = now_kst - timedelta(days=30)
     
     print(f"   📋 취소 주문 확인 범위: {one_month_ago.strftime('%Y-%m-%d')} ~ {now_kst.strftime('%Y-%m-%d')}")
     
-    # 최근 1개월 범위에서 취소 상태 주문만 조회
-    return collect_orders_by_day_with_status(access_token, one_month_ago, now_kst, 'CANCEL')
+    # 단일 API 호출로 전체 기간의 취소 주문 조회
+    url = 'https://api.imweb.me/v2/shop/orders'
+    headers = {'Content-Type': 'application/json', 'access-token': access_token}
+    
+    base_params = {
+        'order_date_from': int(one_month_ago.timestamp()),
+        'order_date_to': int(now_kst.timestamp()),
+        'status': 'cancel',  # 취소 상태만
+        'limit': 100,
+        'order_version': 'v2'
+    }
+    
+    try:
+        print(f"   🔍 취소 주문 조회 중...")
+        response = requests.get(url, headers=headers, params=base_params, timeout=15)
+        response.raise_for_status()
+        
+        data = response.json()
+        orders = data.get('data', {}).get('list', []) or []
+        pagination = data.get('data', {}).get('pagenation', {}) or {}
+        
+        total_count = int(pagination.get('data_count', 0) or 0)
+        
+        if total_count > 0:
+            print(f"   ✅ 최근 1개월 취소 주문: {len(orders)}개 조회 ({total_count}개 총계)")
+        else:
+            print(f"   📋 최근 1개월 취소 주문: 없음")
+        
+        return orders
+        
+    except Exception as e:
+        print(f"   ❌ 취소 주문 조회 오류: {e}")
+        return []
 
 def collect_orders_by_day_with_status(access_token, start_kst_dt, end_kst_dt, target_status):
     """특정 기간의 특정 상태 주문을 수집합니다."""
@@ -795,8 +826,8 @@ def collect_orders_by_day_with_status(access_token, start_kst_dt, end_kst_dt, ta
         
         for t in types:
             base_params = {
-                'order_date_from': int(day_start.timestamp()),
-                'order_date_to': int(day_end.timestamp()),
+        'order_date_from': int(day_start.timestamp()),
+        'order_date_to': int(day_end.timestamp()),
                 'status': 'cancel'  # 취소 상태만 조회
             }
             if t is not None:
@@ -878,8 +909,8 @@ def get_orders_by_day(access_token, day_start, day_end):
             'offset': page,
             'limit': limit,
             'order_version': 'v2',
-            'order_date_from': int(day_start.timestamp()),
-            'order_date_to': int(day_end.timestamp())
+            'payment_time_from': int(day_start.timestamp()),
+            'payment_time_to': int(day_end.timestamp())
         }
         
         try:
@@ -1047,7 +1078,7 @@ def upsert_to_supabase(supabase_config, orders_data):
     import time
     
     try:
-        base_url = f"{supabase_config['url']}/rest/v1/uzu_orders?on_conflict=order_code,prod_no"
+        base_url = f"{supabase_config['url']}/rest/v1/uzu_orders?on_conflict=order_no,prod_no"
         headers = supabase_config['headers'].copy()
         
         print(f"🔄 {len(orders_data)}개 행을 Supabase에 upsert 중...")
@@ -1056,13 +1087,13 @@ def upsert_to_supabase(supabase_config, orders_data):
         # order_code와 prod_no의 조합으로 유니크 체크
         headers['Prefer'] = 'resolution=merge-duplicates,return=minimal'
         
-        # 먼저 배치 내 중복 제거 (같은 order_code + prod_no 조합 제거)
+        # 먼저 배치 내 중복 제거 (같은 order_no + prod_no 조합 제거)
         print(f"🔍 배치 내 중복 제거 중...")
         seen_combinations = set()
         deduplicated_data = []
         
         for order in orders_data:
-            combination = (order.get('order_code', ''), order.get('prod_no', ''))
+            combination = (order.get('order_no', ''), order.get('prod_no', ''))
             if combination not in seen_combinations:
                 seen_combinations.add(combination)
                 deduplicated_data.append(order)

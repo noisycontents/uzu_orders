@@ -2,8 +2,8 @@ name: Daily Orders Update
 
 on:
   schedule:
-    # 매일 오후 3:30 KST (UTC 06:30) - KST는 UTC+9
-    - cron: '30 6 * * *'
+    # 매일 오전 1:00 KST (UTC 16:00) - KST는 UTC+9
+    - cron: '0 16 * * *'
   workflow_dispatch: # 수동 실행 가능
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
         
     - name: Show completion status
       run: |
-        echo "🎉 전체 일일 주문 업데이트 완료 (전날 15:00~당일 15:30)"
+        echo "🎉 전체 일일 주문 업데이트 완료 (매일 오전 1시 KST 자동 실행)"
         echo "   - imweb 데이터: get_orders.py --daily"
         echo "   - WordPress 데이터: get_orders_wp.py --daily" 
         echo "   - 완료 시각: $(date '+%Y-%m-%d %H:%M:%S UTC')"
