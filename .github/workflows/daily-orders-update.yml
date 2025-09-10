@@ -31,11 +31,24 @@ jobs:
         echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
         echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
         echo "FIRST_ORDER_DATE=2025-01-20" >> .env
+        echo "DOK_WP_WOO_Consumer_KEY=${{ secrets.DOK_WP_WOO_Consumer_KEY }}" >> .env
+        echo "DOK_WP_WOO_Consumer_SECRET=${{ secrets.DOK_WP_WOO_Consumer_SECRET }}" >> .env
         
-    - name: Run daily orders update
+    - name: Run daily orders update (imweb)
       run: |
+        echo "🚀 imweb 주문 데이터 업데이트 시작..."
         python3 get_orders.py --daily
+        echo "✅ imweb 주문 데이터 업데이트 완료"
+        
+    - name: Run daily orders update (WordPress)
+      run: |
+        echo "🚀 WordPress 주문 데이터 업데이트 시작..."
+        python3 get_orders_wp.py --daily
+        echo "✅ WordPress 주문 데이터 업데이트 완료"
         
     - name: Show completion status
       run: |
-        echo "✅ 일일 주문 업데이트 완료 (전날 15:00~당일 15:30) - $(date '+%Y-%m-%d %H:%M:%S KST')"
+        echo "🎉 전체 일일 주문 업데이트 완료 (전날 15:00~당일 15:30)"
+        echo "   - imweb 데이터: get_orders.py --daily"
+        echo "   - WordPress 데이터: get_orders_wp.py --daily" 
+        echo "   - 완료 시각: $(date '+%Y-%m-%d %H:%M:%S UTC')"

@@ -118,6 +118,58 @@ def convert_to_seoul_timezone(timestamp):
     
     return seoul_dt.isoformat()
 
+def format_phone_number(phone):
+    """전화번호를 올바른 형식으로 변환합니다.
+    
+    규칙:
+    - 한국 번호(010, 011 등으로 시작): 그대로 반환 (imweb에서 이미 올바르게 처리됨)
+    - 한국 번호에서 0 누락된 경우: 0 추가 (1012345678 → 01012345678)
+    - 잘못된 국가번호 형식 수정: 0049 → +49, 001 → +1
+    - 국가번호로 시작하는 번호: + 기호 추가
+    """
+    if not phone:
+        return ''
+    
+    phone_str = str(phone).strip()
+    
+    # 빈 문자열이면 그대로 반환
+    if not phone_str:
+        return ''
+    
+    # 이미 + 기호가 있으면 그대로 반환
+    if phone_str.startswith('+'):
+        return phone_str
+    
+    # 한국 번호 패턴 (010, 011, 016, 017, 018, 019로 시작)이면 그대로 반환
+    if phone_str.startswith(('010', '011', '016', '017', '018', '019')):
+        return phone_str
+    
+    # 한국 번호에서 0이 누락된 경우 (10, 11, 16, 17, 18, 19로 시작하고 10자리)
+    if (phone_str.startswith(('10', '11', '16', '17', '18', '19')) and 
+        len(phone_str) == 10):
+        return '0' + phone_str
+    
+    # 숫자로 시작하고 한국 번호가 아니면 국가번호로 간주하여 + 추가
+    if phone_str[0].isdigit():
+        # 0049, 001 등의 잘못된 패턴 수정
+        if phone_str.startswith('0049'):
+            return '+49' + phone_str[4:]  # 0049 → +49
+        elif phone_str.startswith('001'):
+            return '+1' + phone_str[3:]   # 001 → +1
+        elif phone_str.startswith('0086'):
+            return '+86' + phone_str[4:]  # 0086 → +86
+        elif phone_str.startswith('0033'):
+            return '+33' + phone_str[4:]  # 0033 → +33
+        elif phone_str.startswith('0044'):
+            return '+44' + phone_str[4:]  # 0044 → +44
+        elif phone_str.startswith('0081'):
+            return '+81' + phone_str[4:]  # 0081 → +81
+        else:
+            return '+' + phone_str
+    
+    # 기타 경우는 그대로 반환
+    return phone_str
+
 def print_usage():
     """사용법을 출력합니다."""
     print("📖 사용법:")
@@ -281,6 +333,138 @@ def ymd_to_ts_range_kst(ymd):
     # API는 epoch seconds 기대 → UTC로 변환 후 초 단위로
     return int(start.timestamp()), int(end.timestamp())
 
+def get_single_date_orders(access_token, date_str):
+    """단일 날짜의 모든 주문을 완전히 수집합니다 (매체별 + 시간대별 분할)."""
+    import time
+    
+    kst = pytz.timezone('Asia/Seoul')
+    date_dt = kst.localize(datetime.strptime(date_str, '%Y-%m-%d'))
+    
+    # 먼저 전체 조회하여 총 개수 확인
+    date_from_ts, date_to_ts = ymd_to_ts_range_kst(date_str)
+    base_params = {
+        'order_date_from': date_from_ts,
+        'order_date_to': date_to_ts,
+    }
+    
+    try:
+        first_list, pgn = _orders_first_page_and_count(access_token, base_params)
+        expected_total = int(pgn.get('data_count', 0) or 0)
+        
+        if expected_total == 0:
+            return []
+        
+        print(f"     📊 전체 예상: {expected_total}개")
+        
+        # 100개 이하면 첫 페이지만 반환
+        if expected_total <= 100:
+            print(f"     ✅ {expected_total}개 → 단순 수집")
+            return first_list
+        
+        # 100개 초과면 매체별 분할 수집
+        print(f"     🔄 {expected_total}개 → 매체별 분할 수집")
+        all_orders = []
+        media_types = [None, 'normal', 'npay', 'talkpay']  # None(ALL) 포함
+        
+        for media_type in media_types:
+            media_params = dict(base_params)
+            if media_type is not None:
+                media_params['type'] = media_type
+            
+            try:
+                media_first, media_pgn = _orders_first_page_and_count(access_token, media_params)
+                media_total = int(media_pgn.get('data_count', 0) or 0)
+                
+                if media_total == 0:
+                    continue
+                
+                media_orders = list(media_first)
+                media_pagesize = int(media_pgn.get('pagesize', 100) or 100)
+                media_total_pages = int(media_pgn.get('total_page', 1) or 1)
+                
+                # 매체별로도 100개 초과면 시간대별 분할
+                if media_total > 100:
+                    print(f"     🔄 {media_type}: {media_total}개 → 시간대별 분할")
+                    media_orders = []
+                    
+                    # 하루를 3시간씩 8개 구간으로 분할
+                    for hour_start in range(0, 24, 3):
+                        hour_end = min(hour_start + 3, 24)
+                        
+                        period_start = date_dt.replace(hour=hour_start, minute=0, second=0)
+                        if hour_end == 24:
+                            period_end = date_dt.replace(hour=23, minute=59, second=59)
+                        else:
+                            period_end = date_dt.replace(hour=hour_end-1, minute=59, second=59)
+                        
+                        hour_params = {
+                            'order_date_from': int(period_start.timestamp()),
+                            'order_date_to': int(period_end.timestamp()),
+                            'type': media_type
+                        }
+                        
+                        try:
+                            hour_first, hour_pgn = _orders_first_page_and_count(access_token, hour_params)
+                            hour_total = int(hour_pgn.get('data_count', 0) or 0)
+                            
+                            if hour_total > 0:
+                                media_orders.extend(hour_first)
+                                print(f"       📍 {hour_start:02d}-{hour_end:02d}시: {len(hour_first)}개")
+                                time.sleep(0.1)
+                                
+                        except Exception as e:
+                            print(f"       ⚠️ {media_type} {hour_start}-{hour_end}시 오류: {e}")
+                            continue
+                
+                else:
+                    # 100개 이하면 페이지네이션 시도
+                    if media_total_pages > 1:
+                        url = 'https://api.imweb.me/v2/shop/orders'
+                        headers = {'Content-Type': 'application/json', 'access-token': access_token}
+                        
+                        for page in range(2, media_total_pages + 1):
+                            params = dict(media_params)
+                            params.update({'offset': page, 'limit': media_pagesize, 'order_version': 'v2'})
+                            
+                            r = requests.get(url, headers=headers, params=params, timeout=15)
+                            r.raise_for_status()
+                            cur = r.json().get('data', {}).get('list', []) or []
+                            
+                            if cur:
+                                media_orders.extend(cur)
+                            time.sleep(0.1)
+                
+                all_orders.extend(media_orders)
+                print(f"     ✅ {media_type}: {len(media_orders)}개 수집 (예상 {media_total}개)")
+                
+            except Exception as e:
+                print(f"     ⚠️ {media_type} 매체 오류: {e}")
+                continue
+        
+        # 중복 제거 (order_no 기준)
+        seen_order_nos = set()
+        unique_orders = []
+        for order in all_orders:
+            order_no = order.get('order_no')
+            if order_no and order_no not in seen_order_nos:
+                seen_order_nos.add(order_no)
+                unique_orders.append(order)
+        
+        if len(unique_orders) != len(all_orders):
+            print(f"     🔁 중복 제거: {len(all_orders)} → {len(unique_orders)}개")
+        
+        print(f"     📊 최종 수집: {len(unique_orders)}개 (예상: {expected_total}개)")
+        
+        # 여전히 부족하면 경고
+        if len(unique_orders) < expected_total * 0.9:
+            print(f"     ⚠️ 수집 부족: {len(unique_orders)}/{expected_total} ({len(unique_orders)/expected_total*100:.1f}%)")
+        
+        return unique_orders
+        
+    except Exception as e:
+        print(f"     ❌ {date_str} 수집 오류: {e}")
+        return []
+
 def get_last_24h_range_kst():
     """KST 기준 일일 업데이트 범위를 반환합니다 (전날 오후 3:00 ~ 당일 오후 3:30)."""
     kst = pytz.timezone('Asia/Seoul')
@@ -309,7 +493,7 @@ def _orders_first_page_and_count(access_token, base_params):
     headers = {'Content-Type': 'application/json', 'access-token': access_token}
     params = dict(base_params)
     # 카운트와 동일 파라미터 유지 + v2 + 페이지 1, pagesize 최대 100
-    params.update({'offset': 1, 'limit': 100, 'order_version': 'v2'})
+    params.update({'page': 1, 'limit': 100, 'order_version': 'v2'})
     resp = requests.get(url, headers=headers, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json().get('data', {})
@@ -351,8 +535,9 @@ def get_recent_orders_all_pages(access_token):
 
 # ===== 전체 기간: 일 단위 수집 =====
 def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
-    """KST 기준 시작/종료 일자를 일 단위로 쪼개어 같은 파라미터로 페이지 순회하여 수집합니다.
-    - 매체별(type): ALL/normal/npay/talkpay 병합
+    """KST 기준 시작/종료 일자를 일 단위로 쪼개어 수집합니다.
+    - 100개 이상인 경우 시간대별로 더 세분화하여 100% 수집 보장
+    - 매체별(type): normal/npay/talkpay 분리 수집 (ALL 제외)
     - 날짜 경계 여유: ±60초
     - 완전한 페이지네이션으로 100개 제한 없이 모든 데이터 수집
     """
@@ -365,86 +550,110 @@ def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
 
     all_orders = []
     day_idx = 0
-    types = [None, 'normal', 'npay', 'talkpay']
-    
     while cursor <= end_kst_dt:
         day_idx += 1
         # 여유 ±60초
         day_start = cursor - timedelta(seconds=60)
         day_end = cursor + timedelta(days=1, seconds=-1+60)
         daily_total = 0
-        type_details = []
         
-        for t in types:
-            base_params = {
-                'order_date_from': int(day_start.timestamp()),
-                'order_date_to': int(day_end.timestamp()),
-            }
-            if t is not None:
-                base_params['type'] = t
-                
-            try:
-                first_list, pgn = _orders_first_page_and_count(access_token, base_params)
-                total = int(pgn.get('data_count', 0) or 0)
-                pagesize = int(pgn.get('pagesize', 100) or 100)
-                total_pages = int(pgn.get('total_page', (total + pagesize - 1)//pagesize) or 1)
-                
-                if total == 0:
-                    continue
-                    
-                day_orders = list(first_list)
-                collected_count = len(first_list)
-                
-                # 페이지네이션으로 모든 데이터 수집 (100개 제한 없음)
-                if total_pages > 1:
-                    for page in range(2, total_pages + 1):
-                        params = dict(base_params)
-                        params.update({'offset': page, 'limit': pagesize, 'order_version': 'v2'})
-                        
-                        retry_count = 0
-                        max_retries = 3
-                        page_success = False
-                        
-                        while retry_count < max_retries and not page_success:
-                            try:
-                                r = requests.get(url, headers=headers, params=params, timeout=15)
-                                r.raise_for_status()
-                                cur = r.json().get('data', {}).get('list', []) or []
-                                
-                                if not cur:
-                                    page_success = True  # 빈 페이지면 정상 종료
-                                    break
-                                    
-                                day_orders.extend(cur)
-                                collected_count += len(cur)
-                                page_success = True
-                                sleep(0.08)
-                                
-                            except Exception as e:
-                                retry_count += 1
-                                if retry_count >= max_retries:
-                                    print(f"      ⚠️ 페이지 {page} 최종 실패: {e}")
-                                    break
-                                else:
-                                    print(f"      ⚠️ 페이지 {page} 재시도 {retry_count}/{max_retries}: {e}")
-                                    sleep(1)
-                        
-                        if not page_success and retry_count >= max_retries:
-                            break
-                
-                if len(day_orders) != total:
-                    print(f"    ⚠️ {t or 'ALL'}: 예상 {total}개 vs 실제 {len(day_orders)}개")
-                
-                type_details.append(f"{t or 'ALL'}:{len(day_orders)}")
-                daily_total += len(day_orders)
-                all_orders.extend(day_orders)
-                
-            except Exception as e:
-                print(f"    ⚠️ {cursor.strftime('%Y-%m-%d')} {t or 'ALL'} 조회 오류: {e}")
+        # 매체 구분 없이 ALL 데이터 수집 (더 단순하고 확실함)
+        base_params = {
+            'order_date_from': int(day_start.timestamp()),
+            'order_date_to': int(day_end.timestamp()),
+        }
+        # type 파라미터 없음 = ALL 매체
+        
+        try:
+            first_list, pgn = _orders_first_page_and_count(access_token, base_params)
+            total = int(pgn.get('data_count', 0) or 0)
+            pagesize = int(pgn.get('pagesize', 100) or 100)
+            total_pages = int(pgn.get('total_page', (total + pagesize - 1)//pagesize) or 1)
+            
+            if total == 0:
+                # 다음 날로 이동
+                cursor += timedelta(days=1)
+                sleep(0.08)
                 continue
+                
+            day_orders = list(first_list)
+            collected_count = len(first_list)
+            
+            # 페이지네이션으로 모든 데이터 수집 (100개 제한 없음)
+            if total_pages > 1:
+                print(f"      🔄 {total_pages}개 페이지 수집 시작 (페이지당 {pagesize}개)")
+                
+                for page in range(2, total_pages + 1):
+                    params = dict(base_params)
+                    params.update({'offset': page, 'limit': pagesize, 'order_version': 'v2'})
+                    
+                    retry_count = 0
+                    max_retries = 3
+                    page_success = False
+                    
+                    while retry_count < max_retries and not page_success:
+                        try:
+                            r = requests.get(url, headers=headers, params=params, timeout=15)
+                            r.raise_for_status()
+                            
+                            # 응답 상세 분석
+                            response_json = r.json()
+                            cur = response_json.get('data', {}).get('list', []) or []
+                            response_pgn = response_json.get('data', {}).get('pagenation', {}) or {}
+                            
+                            print(f"      📄 페이지 {page} 응답: {len(cur)}개 행")
+                            print(f"         파라미터: offset={page}, limit={pagesize}")
+                            print(f"         응답 페이지네이션: {response_pgn}")
+                            
+                            if not cur:
+                                print(f"      📄 페이지 {page}: 빈 페이지 (수집 완료)")
+                                page_success = True
+                                break
+                                
+                            day_orders.extend(cur)
+                            collected_count += len(cur)
+                            print(f"      ✅ 페이지 {page}: {len(cur)}개 수집 (누적: {len(day_orders)}개)")
+                            page_success = True
+                            sleep(0.08)
+                            
+                        except Exception as e:
+                            retry_count += 1
+                            if retry_count >= max_retries:
+                                print(f"      ❌ 페이지 {page} 최종 실패: {e}")
+                                break
+                            else:
+                                print(f"      ⚠️ 페이지 {page} 재시도 {retry_count}/{max_retries}: {e}")
+                                sleep(1)
+                    
+                    if not page_success and retry_count >= max_retries:
+                        print(f"      ❌ 페이지 {page} 수집 실패로 중단")
+                        break
+            
+            if len(day_orders) != total:
+                print(f"    ⚠️ ALL: 예상 {total}개 vs 실제 {len(day_orders)}개")
+                print(f"       페이지 정보: 총 페이지 {total_pages}, 페이지당 {pagesize}개")
+                print(f"       첫 페이지: {len(first_list)}개, 추가 수집: {len(day_orders) - len(first_list)}개")
+                
+                # 100개 이상이고 수집이 부족한 경우 시간대별 분할 수집 시도
+                if total >= 100 and len(day_orders) < total * 0.9:  # 90% 미만 수집 시
+                    print(f"    🔄 ALL: 시간대별 분할 수집 시도...")
+                    hourly_orders = collect_orders_by_hour(access_token, day_start, day_end, None)
+                    if len(hourly_orders) > len(day_orders):
+                        print(f"    ✅ ALL: 시간대별 수집으로 {len(hourly_orders)}개 확보 (기존 {len(day_orders)}개)")
+                        day_orders = hourly_orders
+            
+            daily_total = len(day_orders)
+            all_orders.extend(day_orders)
+            
+        except Exception as e:
+            print(f"    ⚠️ {cursor.strftime('%Y-%m-%d')} 조회 오류: {e}")
+            # 다음 날로 이동
+            cursor += timedelta(days=1)
+            sleep(0.08)
+            continue
         
         if daily_total > 0:
-            print(f"  📅 {day_idx}일차 {cursor.strftime('%Y-%m-%d')}: {daily_total}개 ({', '.join(type_details)})")
+            print(f"  📅 {day_idx}일차 {cursor.strftime('%Y-%m-%d')}: {daily_total}개")
         
         # 다음 날
         cursor += timedelta(days=1)
@@ -452,6 +661,76 @@ def collect_orders_by_day(access_token, start_kst_dt, end_kst_dt):
 
     print(f"✅ 전체 기간 수집 완료: {len(all_orders)}개")
     return all_orders
+
+def collect_orders_by_hour(access_token, day_start, day_end, media_type):
+    """하루를 시간대별로 분할하여 주문을 수집합니다 (100개 제한 회피)."""
+    from time import sleep
+    
+    url = 'https://api.imweb.me/v2/shop/orders'
+    headers = {'Content-Type': 'application/json', 'access-token': access_token}
+    
+    all_hourly_orders = []
+    
+    # 하루를 4시간씩 6개 구간으로 분할 (0-4시, 4-8시, 8-12시, 12-16시, 16-20시, 20-24시)
+    for hour_start in range(0, 24, 4):
+        hour_end = min(hour_start + 4, 24)
+        
+        # 시간 범위 계산
+        period_start = day_start.replace(hour=hour_start, minute=0, second=0)
+        if hour_end == 24:
+            period_end = day_start.replace(hour=23, minute=59, second=59)
+        else:
+            period_end = day_start.replace(hour=hour_end-1, minute=59, second=59)
+        
+        base_params = {
+            'order_date_from': int(period_start.timestamp()),
+            'order_date_to': int(period_end.timestamp()),
+        }
+        
+        if media_type is not None:
+            base_params['type'] = media_type
+        
+        try:
+            # 해당 시간대의 주문 수집
+            first_list, pgn = _orders_first_page_and_count(access_token, base_params)
+            total = int(pgn.get('data_count', 0) or 0)
+            pagesize = int(pgn.get('pagesize', 100) or 100)
+            total_pages = int(pgn.get('total_page', (total + pagesize - 1)//pagesize) or 1)
+            
+            if total == 0:
+                continue
+            
+            hour_orders = list(first_list)
+            
+            # 페이지네이션으로 모든 데이터 수집
+            if total_pages > 1:
+                for page in range(2, total_pages + 1):
+                    params = dict(base_params)
+                    params.update({'offset': page, 'limit': pagesize, 'order_version': 'v2'})
+                    
+                    try:
+                        r = requests.get(url, headers=headers, params=params, timeout=15)
+                        r.raise_for_status()
+                        cur = r.json().get('data', {}).get('list', []) or []
+                        
+                        if not cur:
+                            break
+                        
+                        hour_orders.extend(cur)
+                        sleep(0.08)
+                        
+                    except Exception as e:
+                        print(f"      ⚠️ {hour_start}-{hour_end}시 페이지 {page} 오류: {e}")
+                        break
+            
+            all_hourly_orders.extend(hour_orders)
+            print(f"      📍 {hour_start:02d}-{hour_end:02d}시: {len(hour_orders)}개 ({total}개 예상)")
+            
+        except Exception as e:
+            print(f"      ⚠️ {hour_start}-{hour_end}시 수집 오류: {e}")
+            continue
+    
+    return all_hourly_orders
 
 def get_daily_orders_24h(access_token):
     """일일 업데이트 (전날 오후 3:00 ~ 당일 오후 3:30) 주문을 수집합니다."""
@@ -633,39 +912,16 @@ def get_orders_by_day(access_token, day_start, day_end):
     return orders
 
 def get_all_orders(access_token, target_date=None):
-    """안전한 방식: 같은 파라미터로 카운트→페이지 순회. target_date 없으면 최근 3개월 전체.
-    target_date가 있으면 그 하루 범위를 초 단위 Timestamp로 설정해 같은 파라미터로 페이지 루프.
-    """
-    # 특정 날짜
+    """기존 방식으로 주문을 수집합니다. target_date 없으면 전체 기간을 날짜별로 수집."""
+    # 특정 날짜 처리
     if target_date:
         print(f"🗓️ 특정 날짜 조회: {target_date}")
-        date_from_ts, date_to_ts = ymd_to_ts_range_kst(target_date)
-        base_params = {
-            'order_date_from': date_from_ts,
-            'order_date_to': date_to_ts,
-        }
-        first_list, pgn = _orders_first_page_and_count(access_token, base_params)
-        total = int(pgn.get('data_count', 0) or 0)
-        pagesize = int(pgn.get('pagesize', 100) or 100)
-        total_pages = int(pgn.get('total_page', (total + pagesize - 1)//pagesize) or 1)
-        print(f"📈 해당 날짜 총 {total}개, 페이지 {total_pages}")
-        all_orders = []
-        all_orders.extend(first_list)
-        if total_pages > 1:
-            url = 'https://api.imweb.me/v2/shop/orders'
-            headers = {'Content-Type': 'application/json', 'access-token': access_token}
-            for page in range(2, total_pages + 1):
-                params = dict(base_params)
-                params.update({'offset': page, 'limit': pagesize, 'order_version': 'v2'})
-                r = requests.get(url, headers=headers, params=params, timeout=15)
-                r.raise_for_status()
-                cur = r.json().get('data', {}).get('list', []) or []
-                if not cur:
-                    break
-                all_orders.extend(cur)
-        return all_orders
+        # 기존 방식: 단일 날짜 수집
+        orders = get_single_date_orders(access_token, target_date)
+        print(f"✅ 특정 날짜 수집 완료: {len(orders)}개")
+        return orders
 
-    # target_date 없음: 전체 기간을 강제 수집 (최초 주문일은 환경변수 또는 2025-01-20 기본값)
+    # 전체 기간 처리: 기존 방식으로 날짜별 개별 수집
     kst = pytz.timezone('Asia/Seoul')
     first_order_ymd = os.getenv('FIRST_ORDER_DATE', '2025-01-20')
     try:
@@ -673,14 +929,118 @@ def get_all_orders(access_token, target_date=None):
     except Exception:
         start_kst = kst.localize(datetime(2025, 1, 20))
     end_kst = datetime.now(kst)
-    print(f"📆 전체 기간 일 단위 수집(강제): {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
-    all_period = collect_orders_by_day(access_token, start_kst, end_kst)
-    if not all_period:
-        print("⚠️ 전체 기간 수집 결과가 비어 있습니다. 최근 3개월만 반환합니다.")
-        recent = get_recent_orders_all_pages(access_token)
-        print(f"✅ 최근 3개월 수집 완료: {len(recent)}개")
-        return recent
-    return all_period
+    
+    print(f"📆 전체 기간 날짜별 개별 수집: {start_kst.strftime('%Y-%m-%d')} ~ {end_kst.strftime('%Y-%m-%d')}")
+    
+    all_orders = []
+    current_date = start_kst
+    day_count = 0
+    
+    while current_date <= end_kst:
+        day_count += 1
+        date_str = current_date.strftime('%Y-%m-%d')
+        
+        print(f"  📅 {day_count}일차 {date_str} 처리 중...")
+        
+        # 기존 방식: 각 날짜별로 개별 수집
+        daily_orders = get_single_date_orders(access_token, date_str)
+        
+        if daily_orders:
+            all_orders.extend(daily_orders)
+            print(f"     ✅ {len(daily_orders)}개 수집 완료")
+        else:
+            print(f"     📋 해당 날짜에 주문 없음")
+        
+        # 다음 날로 이동
+        current_date += timedelta(days=1)
+        
+        # 너무 많은 날짜 처리 방지 (최대 1년)
+        if day_count >= 365:
+            print(f"⚠️ 최대 처리 날짜 도달 ({day_count}일)")
+            break
+    
+    print(f"✅ 전체 기간 수집 완료: {len(all_orders)}개 ({day_count}일간)")
+    return all_orders
+
+def get_all_orders_without_date_filter(access_token):
+    """API로 접근 가능한 모든 주문을 수집합니다 (최근 2-3개월 데이터)."""
+    import time
+    
+    url = 'https://api.imweb.me/v2/shop/orders'
+    headers = {'Content-Type': 'application/json', 'access-token': access_token}
+    
+    all_orders = []
+    page = 1
+    max_pages = 20  # 안전장치 (최대 20페이지)
+    
+    print(f"🔄 API 접근 가능한 모든 주문 수집 시작...")
+    print(f"⚠️  참고: imweb API는 최근 2-3개월 데이터만 제공합니다")
+    
+    while page <= max_pages:
+        params = {
+            'page': page,
+            'limit': 100,
+            'order_version': 'v2'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json().get('data', {})
+            orders = data.get('list', []) or []
+            pagination = data.get('pagenation', {}) or {}
+            
+            if not orders:
+                print(f"  📄 페이지 {page}: 빈 페이지 (수집 완료)")
+                break
+            
+            # 중복 제거를 위해 order_code 기준으로 필터링
+            unique_orders = []
+            existing_codes = {order.get('order_code') for order in all_orders}
+            
+            for order in orders:
+                order_code = order.get('order_code')
+                if order_code and order_code not in existing_codes:
+                    unique_orders.append(order)
+                    existing_codes.add(order_code)
+            
+            all_orders.extend(unique_orders)
+            
+            total_count = int(pagination.get('data_count', 0) or 0)
+            current_page = int(pagination.get('current_page', page) or page)
+            total_pages = int(pagination.get('total_page', 1) or 1)
+            
+            print(f"  📄 페이지 {page}: {len(orders)}개 → {len(unique_orders)}개 (중복 제거 후)")
+            print(f"      누적: {len(all_orders)}개, API 정보: 총 {total_count}개")
+            
+            # total_pages에 따라 종료
+            if page >= total_pages:
+                print(f"  ✅ 모든 페이지 수집 완료 ({total_pages}페이지)")
+                break
+                
+            page += 1
+            time.sleep(0.1)  # API 호출 간격
+            
+        except Exception as e:
+            print(f"  ❌ 페이지 {page} 수집 오류: {e}")
+            break
+    
+    print(f"🎉 API 접근 가능한 주문 수집 완료: {len(all_orders)}개 (중복 제거됨)")
+    
+    # 날짜 범위 표시
+    if all_orders:
+        import pytz
+        from datetime import datetime
+        
+        kst = pytz.timezone('Asia/Seoul')
+        times = [order.get('order_time', 0) for order in all_orders if order.get('order_time')]
+        if times:
+            earliest = datetime.fromtimestamp(min(times), tz=kst)
+            latest = datetime.fromtimestamp(max(times), tz=kst)
+            print(f"📅 수집된 주문 기간: {earliest.strftime('%Y-%m-%d')} ~ {latest.strftime('%Y-%m-%d')}")
+    
+    return all_orders
 
 def upsert_to_supabase(supabase_config, orders_data):
     """주문 데이터를 Supabase에 효율적으로 upsert(업데이트/인서트)합니다."""
@@ -696,13 +1056,27 @@ def upsert_to_supabase(supabase_config, orders_data):
         # order_code와 prod_no의 조합으로 유니크 체크
         headers['Prefer'] = 'resolution=merge-duplicates,return=minimal'
         
+        # 먼저 배치 내 중복 제거 (같은 order_code + prod_no 조합 제거)
+        print(f"🔍 배치 내 중복 제거 중...")
+        seen_combinations = set()
+        deduplicated_data = []
+        
+        for order in orders_data:
+            combination = (order.get('order_code', ''), order.get('prod_no', ''))
+            if combination not in seen_combinations:
+                seen_combinations.add(combination)
+                deduplicated_data.append(order)
+        
+        if len(deduplicated_data) != len(orders_data):
+            print(f"🔁 배치 내 중복 제거: {len(orders_data)} → {len(deduplicated_data)}개")
+        
         # 배치 크기로 나누어 저장 (중복 문제 방지를 위해 더 작게)
         batch_size = 10  # 중복 오류 방지를 위해 10개씩
         success_count = 0
         failed_batches = []
         
-        for i in range(0, len(orders_data), batch_size):
-            batch = orders_data[i:i + batch_size]
+        for i in range(0, len(deduplicated_data), batch_size):
+            batch = deduplicated_data[i:i + batch_size]
             batch_num = i//batch_size + 1
             
             # 재시도 로직 (최대 3번 시도)
@@ -831,11 +1205,11 @@ def prepare_supabase_data(order, product_info):
         # 주문자 정보
         'orderer_name': order.get('orderer', {}).get('name', ''),     # 주문자 이름
         'orderer_email': order.get('orderer', {}).get('email', ''),   # 주문자 이메일
-        'orderer_phone': order.get('orderer', {}).get('call', ''),    # 주문자 전화번호
+        'orderer_phone': format_phone_number(order.get('orderer', {}).get('call', '')),    # 주문자 전화번호
         
         # 배송지 정보
         'delivery_name': order.get('delivery', {}).get('address', {}).get('name', ''),           # 배송지 수령인
-        'delivery_phone': order.get('delivery', {}).get('address', {}).get('phone', ''),         # 배송지 전화번호
+        'delivery_phone': format_phone_number(order.get('delivery', {}).get('address', {}).get('phone', '')),         # 배송지 전화번호
         'delivery_postcode': order.get('delivery', {}).get('address', {}).get('postcode', ''),   # 배송지 우편번호
         'delivery_address': order.get('delivery', {}).get('address', {}).get('address', ''),     # 배송지 주소
         'delivery_address_detail': order.get('delivery', {}).get('address', {}).get('address_detail', ''),  # 배송지 상세주소
@@ -952,7 +1326,7 @@ def recover_missing_orders_from_csv(access_token, supabase_config, csv_file_path
                         recovered_orders.append(supabase_row)
                     
                     print(f"    ✅ {len(products_list)}개 상품 처리 완료")
-                    time.sleep(0.1)  # API 호출 간격
+                    time.sleep(0.3)  # API 호출 간격 (속도 제한 방지)
                     
                 except Exception as e:
                     failed_orders.append(order_no)
@@ -1042,8 +1416,8 @@ def retry_missing_product_orders(access_token, supabase_config):
                     failed_orders.append(order_no)
                     print(f"    ❌ 상품 정보 재조회 실패")
                 
-                # API 호출 간격
-                time.sleep(0.2)
+                # API 호출 간격 (속도 제한 방지)
+                time.sleep(0.5)
                 
             except Exception as e:
                 failed_orders.append(order_no)
@@ -1280,9 +1654,9 @@ def main():
             order_no = order.get('order_no', '')
             print(f"  {i}/{len(orders)} 주문번호: {order_no} 처리 중...")
             
-            # API 호출 간격을 두어 안정성 향상
+            # API 호출 간격을 두어 안정성 향상 (속도 제한 방지)
             if i > 1:
-                time.sleep(0.1)  # 100ms 대기 (전체 처리이므로 빠르게)
+                time.sleep(0.3)  # 300ms 대기 (속도 제한 방지)
             
             # 주문 상세 정보에서 상품 리스트 가져오기
             products_list = get_order_products_list(final_access_token, order_no)
