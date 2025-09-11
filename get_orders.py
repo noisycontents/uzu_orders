@@ -466,23 +466,24 @@ def get_single_date_orders(access_token, date_str):
         return []
 
 def get_last_24h_range_kst():
-    """KST 기준 일일 업데이트 범위를 반환합니다 (전날 오후 3:00 ~ 당일 오후 3:30)."""
+    """KST 기준 일일 업데이트 범위를 반환합니다 (전전날 23:00 ~ 전날 24:00, 총 25시간)."""
     kst = pytz.timezone('Asia/Seoul')
     now_kst = datetime.now(kst)
     
-    # 당일 오후 3:30
-    today_330pm = now_kst.replace(hour=15, minute=30, second=0, microsecond=0)
+    # GitHub Actions가 오전 1시에 실행되므로
+    # 전전날 23:00 ~ 전날 24:00 (25시간) 범위로 설정
     
-    # 전날 오후 3:00 (30분 여유 + 누락 방지)
-    yesterday_3pm = today_330pm - timedelta(days=1, minutes=30)
+    # 전날 자정 (24:00 = 다음날 00:00)
+    yesterday_midnight = now_kst.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # 현재 시간이 오후 3:30 이전이면 어제 기준으로 계산
-    if now_kst < today_330pm:
-        end_time = yesterday_3pm + timedelta(days=1, minutes=30)  # 어제 3:30
-        start_time = yesterday_3pm - timedelta(days=1)  # 그저께 3:00
-    else:
-        end_time = today_330pm
-        start_time = yesterday_3pm
+    # 전전날 23:00 (2일 전 + 23시간)
+    day_before_yesterday_11pm = yesterday_midnight - timedelta(days=1, hours=1)
+    
+    # 전날 24:00 (= 당일 00:00)
+    yesterday_24h = yesterday_midnight
+    
+    start_time = day_before_yesterday_11pm  # 전전날 23:00
+    end_time = yesterday_24h                # 전날 24:00
     
     return start_time, end_time
 
@@ -733,11 +734,11 @@ def collect_orders_by_hour(access_token, day_start, day_end, media_type):
     return all_hourly_orders
 
 def get_daily_orders_24h(access_token):
-    """일일 업데이트 (전날 오후 3:00 ~ 당일 오후 3:30) 주문을 수집합니다."""
+    """일일 업데이트 (전전날 23:00 ~ 전날 24:00, 총 25시간) 주문을 수집합니다."""
     start_time, end_time = get_last_24h_range_kst()
     
     print(f"📅 일일 업데이트: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
-    print(f"   ⏰ 30분 여유 시간으로 누락 방지")
+    print(f"   ⏰ 25시간 범위로 누락 방지 (GitHub Actions 오전 1시 실행)")
     
     # 1. 지정된 시간 범위의 새 주문 수집
     new_orders = collect_orders_by_day(access_token, start_time, end_time)
