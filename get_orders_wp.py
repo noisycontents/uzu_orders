@@ -623,13 +623,13 @@ def main():
         
         # 일일 업데이트 모드 (독일어 관련 상품만 수집)
         if args.daily:
-            print("⏰ 일일 업데이트 모드 (독일어 관련 상품만 수집)")
+            print("⏰ 일일 업데이트 모드 (상품 ID 237513만 수집)")
             
             # get_orders.py와 동일한 시간 범위 사용
             start_time, end_time = get_last_24h_range_kst()
             print(f"📅 업데이트 기간: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
             print(f"   ⏰ 25시간 범위로 누락 방지 (GitHub Actions 오전 1시 실행)")
-            print(f"🎯 대상 상품: '독일어 멤버십', '독일어' 관련 상품")
+            print(f"🎯 대상 상품: ID 237513")
             
             # 지정된 시간 범위의 모든 주문 조회 후 상품명으로 필터링
             all_orders = []
@@ -650,40 +650,59 @@ def main():
                     
                 page += 1
             
-            # 1차: 독일어 관련 상품만 필터링
-            target_keywords = ['독일어 멤버십', '독일어', 'deutsch', '톡톡 독일어']
-            product_filtered = filter_orders_by_product_name(all_orders, target_keywords)
-            
-            # 2차: 시간 범위 정확한 필터링 (클라이언트 측)
+            # 상품 ID 237513 필터링 및 시간 범위 정확한 필터링 (클라이언트 측) - 결제 시간 기준
             time_filtered = []
-            for order in product_filtered:
-                order_date_str = order.get('date_created', '')
-                if order_date_str:
+            for order in all_orders:
+                # 상품 ID 237513이 포함된 주문만 처리
+                line_items = order.get('line_items', [])
+                has_target_product = False
+                
+                for item in line_items:
+                    product_id = item.get('product_id', 0)
+                    if product_id == 237513:
+                        has_target_product = True
+                        break
+                
+                if not has_target_product:
+                    continue
+                # 결제 시간 우선 사용, 없으면 생성 시간 사용
+                payment_date_str = order.get('date_paid', '') or order.get('date_created', '')
+                if payment_date_str:
                     try:
-                        # UTC 시간을 KST로 변환
-                        order_dt = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
-                        if order_dt.tzinfo is None:
-                            order_dt = order_dt.replace(tzinfo=pytz.UTC)
-                        
+                        # WordPress 시간은 이미 KST 기준이므로 그대로 사용
                         kst = pytz.timezone('Asia/Seoul')
-                        order_kst = order_dt.astimezone(kst)
                         
-                        # 지정된 시간 범위 내인지 정확히 확인
+                        if payment_date_str.endswith('Z'):
+                            # Z가 있는 경우는 UTC로 처리
+                            order_dt = datetime.fromisoformat(payment_date_str.replace('Z', '+00:00'))
+                            order_kst = order_dt.astimezone(kst)
+                        else:
+                            # Z가 없으면 이미 KST 기준으로 해석
+                            order_dt = datetime.fromisoformat(payment_date_str)
+                            if order_dt.tzinfo is None:
+                                # 시간대 정보가 없으면 KST로 가정 (WordPress 기본 설정)
+                                order_kst = kst.localize(order_dt)
+                            else:
+                                order_kst = order_dt.astimezone(kst)
+                        
+                        # 지정된 시간 범위 내인지 정확히 확인 (결제 시간 기준)
                         if start_time <= order_kst <= end_time:
                             time_filtered.append(order)
-                            print(f"    ✅ 범위 내 주문: {order.get('id')} | {order_kst.strftime('%Y-%m-%d %H:%M:%S')} KST")
+                            payment_type = "결제" if order.get('date_paid') else "생성"
+                            print(f"    ✅ 범위 내 주문: {order.get('id')} | {order_kst.strftime('%Y-%m-%d %H:%M:%S')} KST ({payment_type})")
                         else:
-                            print(f"    ❌ 범위 외 주문: {order.get('id')} | {order_kst.strftime('%Y-%m-%d %H:%M:%S')} KST")
+                            payment_type = "결제" if order.get('date_paid') else "생성"
+                            print(f"    ❌ 범위 외 주문: {order.get('id')} | {order_kst.strftime('%Y-%m-%d %H:%M:%S')} KST ({payment_type})")
                     except Exception as e:
-                        print(f"    ⚠️ 날짜 변환 오류: {order_date_str} - {e}")
+                        print(f"    ⚠️ 날짜 변환 오류: {payment_date_str} - {e}")
                         continue
             
-            print(f"✅ 일일 업데이트 조회 완료: {len(all_orders)}개 주문 → {len(product_filtered)}개 독일어 관련 → {len(time_filtered)}개 시간 범위 내")
+            print(f"✅ 일일 업데이트 조회 완료: {len(all_orders)}개 주문 → {len(time_filtered)}개 상품 ID 237513 & 시간 범위 내")
             all_orders = time_filtered
             
-        # 특정 날짜 모드 (독일어 관련 상품만 수집)
+        # 특정 날짜 모드 (상품 ID 237513만 수집)
         elif args.date:
-            print(f"📅 특정 날짜 모드: {args.date} (독일어 관련 상품만 수집)")
+            print(f"📅 특정 날짜 모드: {args.date} (상품 ID 237513만 수집)")
             
             try:
                 # 특정 날짜를 KST 기준으로 변환
@@ -693,7 +712,7 @@ def main():
                 end_time = kst.localize(date_dt.replace(hour=23, minute=59, second=59))
                 
                 print(f"📅 조회 기간: {start_time.strftime('%Y-%m-%d %H:%M')} ~ {end_time.strftime('%Y-%m-%d %H:%M')} (KST)")
-                print(f"🎯 대상 상품: '독일어 멤버십', '독일어' 관련 상품")
+                print(f"🎯 대상 상품: ID 237513")
                 
                 # 해당 날짜의 모든 주문 조회 후 상품명으로 필터링
                 all_orders = []
@@ -714,11 +733,22 @@ def main():
                         
                     page += 1
                 
-                # 독일어 관련 상품만 필터링
-                target_keywords = ['독일어 멤버십', '독일어', 'deutsch', '톡톡 독일어']
-                filtered_orders = filter_orders_by_product_name(all_orders, target_keywords)
+                # 상품 ID 237513만 필터링
+                filtered_orders = []
+                for order in all_orders:
+                    line_items = order.get('line_items', [])
+                    has_target_product = False
+                    
+                    for item in line_items:
+                        product_id = item.get('product_id', 0)
+                        if product_id == 237513:
+                            has_target_product = True
+                            break
+                    
+                    if has_target_product:
+                        filtered_orders.append(order)
                 
-                print(f"✅ 특정 날짜 조회 완료: {len(all_orders)}개 주문 → {len(filtered_orders)}개 독일어 관련 주문")
+                print(f"✅ 특정 날짜 조회 완료: {len(all_orders)}개 주문 → {len(filtered_orders)}개 상품 ID 237513 주문")
                 all_orders = filtered_orders
                 
             except ValueError:
