@@ -127,23 +127,31 @@ def format_phone_number(phone):
     return phone_str
 
 def convert_wp_date_to_kst_iso(date_str):
-    """WordPress 날짜를 KST ISO 형식으로 변환합니다."""
+    """WordPress 날짜를 Supabase 저장용 UTC ISO 형식으로 변환합니다.
+    WordPress API는 KST 시간을 반환하므로 이를 UTC로 변환하여 Supabase에 저장합니다."""
     if not date_str:
         return None
     
     try:
-        # WordPress 날짜 형식: 2024-12-27T17:03:00
-        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-        
-        # UTC라고 가정하고 KST로 변환
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=pytz.UTC)
-        
-        # KST로 변환
+        # WordPress 날짜 형식: 2024-12-27T17:03:00 (KST 시간, 시간대 정보 없음)
         kst = pytz.timezone('Asia/Seoul')
-        kst_dt = dt.astimezone(kst)
         
-        return kst_dt.isoformat()
+        if date_str.endswith('Z'):
+            # Z가 있는 경우는 UTC로 처리
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            kst_dt = dt.astimezone(kst)
+        else:
+            # Z가 없으면 이미 KST 기준으로 해석 (WordPress 기본 설정)
+            dt = datetime.fromisoformat(date_str)
+            if dt.tzinfo is None:
+                # 시간대 정보가 없으면 KST로 가정
+                kst_dt = kst.localize(dt)
+            else:
+                kst_dt = dt.astimezone(kst)
+        
+        # Supabase 저장용으로 UTC로 변환
+        utc_dt = kst_dt.astimezone(pytz.UTC)
+        return utc_dt.isoformat()
         
     except Exception as e:
         print(f"⚠️ 날짜 변환 오류: {date_str} - {e}")
