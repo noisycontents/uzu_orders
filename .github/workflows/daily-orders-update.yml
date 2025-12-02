@@ -4,7 +4,12 @@ on:
   schedule:
     # 매일 오전 1:00 KST (UTC 16:00) - KST는 UTC+9
     - cron: '0 16 * * *'
-  workflow_dispatch: # 수동 실행 가능
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "수동 실행 날짜 (YYYY-MM-DD)"
+        required: false
+        default: ""
 
 jobs:
   update-orders:
@@ -36,19 +41,29 @@ jobs:
         
     - name: Run daily orders update (imweb)
       run: |
+        TARGET_DATE="${{ github.event.inputs.target_date }}"
         echo "🚀 imweb 주문 데이터 업데이트 시작..."
-        python3 get_orders.py --daily
+        if [ -z "$TARGET_DATE" ]; then
+          python3 get_orders.py --daily
+        else
+          python3 get_orders.py --date "$TARGET_DATE"
+        fi
         echo "✅ imweb 주문 데이터 업데이트 완료"
         
     - name: Run daily orders update (WordPress)
       run: |
+        TARGET_DATE="${{ github.event.inputs.target_date }}"
         echo "🚀 WordPress 주문 데이터 업데이트 시작..."
-        python3 get_orders_wp.py --daily
+        if [ -z "$TARGET_DATE" ]; then
+          python3 get_orders_wp.py --daily
+        else
+          python3 get_orders_wp.py --date "$TARGET_DATE"
+        fi
         echo "✅ WordPress 주문 데이터 업데이트 완료"
         
     - name: Show completion status
       run: |
         echo "🎉 전체 일일 주문 업데이트 완료 (매일 오전 1시 KST 자동 실행)"
-        echo "   - imweb 데이터: get_orders.py --daily"
-        echo "   - WordPress 데이터: get_orders_wp.py --daily" 
+        echo "   - imweb 데이터: get_orders.py --daily 또는 --date ${TARGET_DATE:-오늘}"
+        echo "   - WordPress 데이터: get_orders_wp.py --daily 또는 --date ${TARGET_DATE:-오늘}" 
         echo "   - 완료 시각: $(date '+%Y-%m-%d %H:%M:%S UTC')"
