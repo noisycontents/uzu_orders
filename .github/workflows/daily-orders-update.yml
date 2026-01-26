@@ -1,0 +1,54 @@
+name: Daily Orders Update
+
+on:
+  schedule:
+    # 매일 오전 1:00 KST (UTC 16:00) - KST는 UTC+9
+    - cron: '0 16 * * *'
+  workflow_dispatch: # 수동 실행 가능
+
+jobs:
+  update-orders:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create .env file
+      run: |
+        echo "API_KEY=${{ secrets.API_KEY }}" >> .env
+        echo "SECRET_KEY=${{ secrets.SECRET_KEY }}" >> .env
+        echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
+        echo "SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}" >> .env
+        echo "FIRST_ORDER_DATE=2025-01-20" >> .env
+        echo "DOK_WP_WOO_Consumer_KEY=${{ secrets.DOK_WP_WOO_Consumer_KEY }}" >> .env
+        echo "DOK_WP_WOO_Consumer_SECRET=${{ secrets.DOK_WP_WOO_Consumer_SECRET }}" >> .env
+        
+    - name: Run daily orders update (imweb)
+      run: |
+        echo "🚀 imweb 주문 데이터 업데이트 시작..."
+        python3 get_orders.py --daily
+        echo "✅ imweb 주문 데이터 업데이트 완료"
+        
+    - name: Run daily orders update (WordPress)
+      run: |
+        echo "🚀 WordPress 주문 데이터 업데이트 시작..."
+        python3 get_orders_wp.py --daily
+        echo "✅ WordPress 주문 데이터 업데이트 완료"
+        
+    - name: Show completion status
+      run: |
+        echo "🎉 전체 일일 주문 업데이트 완료 (매일 오전 1시 KST 자동 실행)"
+        echo "   - imweb 데이터: get_orders.py --daily"
+        echo "   - WordPress 데이터: get_orders_wp.py --daily" 
+        echo "   - 완료 시각: $(date '+%Y-%m-%d %H:%M:%S UTC')"
